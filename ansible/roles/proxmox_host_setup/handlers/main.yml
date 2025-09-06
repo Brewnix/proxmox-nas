@@ -1,0 +1,17 @@
+---
+# Proxmox Host Setup Handlers
+
+- name: restart networking
+  ansible.builtin.service:
+    name: networking
+    state: restarted
+
+- name: restart zfs-zed
+  ansible.builtin.service:
+    name: zfs-zed
+    state: restarted
+
+- name: restart node-exporter
+  ansible.builtin.service:
+    name: prometheus-node-exporter
+    state: restarted

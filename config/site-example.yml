@@ -1,0 +1,133 @@
+# Proxmox NAS Site Configuration
+# Example configuration for automated GitOps deployment
+
+site_name: "nas-primary"
+location: "Server Room"
+admin_email: "admin@example.com"
+
+# Storage configuration
+storage:
+  # System disks (OS and Proxmox)
+  system_disks:
+    - "/dev/sda"
+  system_raid: "mirror"  # Options: none, mirror (Linux RAID)
+  
+  # Data disks (ZFS pool for NAS)
+  data_disks:
+    - "/dev/sdb"
+    - "/dev/sdc"
+    - "/dev/sdd"
+    - "/dev/sde"
+  raid_level: "raidz1"  # Options: raidz1, raidz2, raidz3, mirror
+  
+  # Optional performance devices
+  slog_devices:  # Separate Log (write cache) - SSD recommended
+    - "/dev/nvme0n1"
+  l2arc_devices:  # Level 2 ARC (read cache) - SSD recommended
+    - "/dev/nvme1n1"
+  
+  # Hot spares for automatic replacement
+  hot_spare_disks:
+    - "/dev/sdf"
+    - "/dev/sdg"
+
+# Network configuration
+network:
+  interface: "enp1s0"
+  vlan_id: 20
+  ip_range: "10.1.20.0/24"
+  management_ip: "192.168.1.100/24"
+  gateway: "192.168.1.1"
+  dns: "8.8.8.8 1.1.1.1"
+
+# Services to deploy
+services:
+  truenas: true
+  nextcloud: true
+  coder: false
+  kubernate: false
+  memos: true
+  gitlab: false
+
+# TrueNAS configuration
+truenas:
+  vm_id: 100
+  cores: 4
+  memory: 8192
+  disk_size: "100G"
+  zfs_passthrough: true
+
+# Service configurations
+nextcloud:
+  vm_id: 101
+  cores: 2
+  memory: 4096
+  disk_size: "50G"
+
+coder:
+  vm_id: 102
+  cores: 2
+  memory: 2048
+  disk_size: "20G"
+
+memos:
+  container_name: "memos"
+  image: "ghcr.io/usememos/memos:latest"
+  port: 5230
+
+# GitOps configuration
+gitops:
+  repo_url: "https://github.com/your-org/brewnix-deployment.git"
+  branch: "main"
+  auto_update: true
+
+# Monitoring configuration
+monitoring:
+  email: "admin@example.com"
+  prometheus: true
+  grafana: false
+
+# Backup configuration
+backup:
+  schedule: "0 2 * * *"
+  retention_days: 30
+  remote_target: "backup.example.com"
+
+# Proxmox API configuration (required for VM management)
+proxmox:
+  api_host: "localhost"
+  api_user: "root@pam"
+  # api_password: "your-proxmox-password"  # Set via environment variable
+
+# VM/Container management
+proxmox_vms:
+  - name: "truenas"
+    vmid: 100
+    cores: 4
+    memory: 8192
+    disk: "local-zfs:100"
+    ostype: "l26"
+    state: "present"
+  - name: "nextcloud"
+    vmid: 101
+    cores: 2
+    memory: 4096
+    disk: "local-zfs:50"
+    ostype: "l26"
+    state: "present"
+
+proxmox_lxc:
+  - name: "monitoring"
+    vmid: 200
+    ostemplate: "local:vztmpl/debian-12-standard_12.0-1_amd64.tar.zst"
+    storage: "local-zfs"
+    memory: 1024
+    cores: 1
+    state: "present"
+
+# Web UI configuration
+web_ui:
+  enabled: true
+  vmid: 300
+  port: 8080
+  repo: "https://github.com/your-org/proxmox-nas-web-ui.git"

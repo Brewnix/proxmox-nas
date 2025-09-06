@@ -1,0 +1,95 @@
+---
+# Web UI Deployment Tasks
+# Deploy Proxmox NAS web interface as LXC container
+
+- name: Create web UI LXC container
+  community.general.proxmox_lxc:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    node: "{{ inventory_hostname }}"
+    vmid: "{{ web_ui_vmid | default(300) }}"
+    hostname: "nas-web-ui"
+    ostemplate: "{{ web_ui_ostemplate | default('local:vztmpl/debian-12-standard_12.0-1_amd64.tar.zst') }}"
+    storage: "{{ web_ui_storage | default('local-zfs') }}"
+    memory: "{{ web_ui_memory | default(512) }}"
+    cores: "{{ web_ui_cores | default(1) }}"
+    netif: 'net0=name=eth0,bridge=vmbr0,ip=dhcp'
+    features: 'nesting=1'
+    state: present
+
+- name: Start web UI container
+  community.general.proxmox_lxc:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    hostname: "nas-web-ui"
+    node: "{{ inventory_hostname }}"
+    state: started
+
+- name: Wait for container to be ready
+  ansible.builtin.pause:
+    seconds: 30
+
+- name: Install Python and Flask in container
+  ansible.builtin.command: >
+    pct exec {{ web_ui_vmid | default(300) }} -- bash -c "
+    apt update && apt install -y python3 python3-pip python3-flask git &&
+    pip3 install flask pyyaml"
+  args:
+    creates: /var/lib/lxc/{{ web_ui_vmid | default(300) }}/rootfs/usr/bin/python3
+  delegate_to: localhost
+
+- name: Copy web UI application to container
+  ansible.builtin.command: >
+    pct exec {{ web_ui_vmid | default(300) }} -- bash -c "
+    mkdir -p /opt/nas-web-ui &&
+    cd /opt/nas-web-ui &&
+    if [ ! -d .git ]; then
+      git clone {{ web_ui_repo | default('https://github.com/your-org/proxmox-nas-web-ui.git') }} .
+    fi"
+  delegate_to: localhost
+
+- name: Configure web UI service
+  ansible.builtin.template:
+    src: web-ui.service.j2
+    dest: /etc/systemd/system/nas-web-ui.service
+    mode: '0644'
+  delegate_to: "{{ inventory_hostname }}"
+
+- name: Start web UI service
+  ansible.builtin.systemd:
+    name: nas-web-ui
+    state: started
+    enabled: true
+    daemon_reload: true
+  delegate_to: "{{ inventory_hostname }}"
+
+- name: Configure nginx reverse proxy (optional)
+  ansible.builtin.template:
+    src: nginx-web-ui.conf.j2
+    dest: /etc/nginx/sites-available/nas-web-ui
+    mode: '0644'
+  when: web_ui_nginx | default(false)
+  notify: reload nginx
+
+- name: Enable nginx site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/nas-web-ui
+    dest: /etc/nginx/sites-enabled/nas-web-ui
+    state: link
+  when: web_ui_nginx | default(false)
+  notify: reload nginx
+
+- name: Create web UI systemd service file
+  ansible.builtin.template:
+    src: web-ui.service.j2
+    dest: /etc/systemd/system/nas-web-ui.service
+    mode: '0644'
+
+- name: Start web UI service
+  ansible.builtin.systemd:
+    name: nas-web-ui
+    state: started
+    enabled: true
+    daemon_reload: true

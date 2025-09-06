@@ -1,0 +1,50 @@
+---
+# Proxmox NAS Deployment Playbook
+# Unified GitOps deployment for NAS infrastructure
+
+- name: Deploy Proxmox NAS Infrastructure
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: true
+
+  vars_files:
+    - "{{ site_config_file | default('config/sites/nas-site.yml') }}"
+
+  pre_tasks:
+    - name: Validate site configuration
+      assert:
+        that:
+          - site_name is defined
+          - storage is defined
+          - network is defined
+        fail_msg: "Site configuration is incomplete"
+
+    - name: Display deployment information
+      debug:
+        msg: |
+          Deploying Proxmox NAS: {{ site_name }}
+          Network: {{ network.vlan_id }} - {{ network.ip_range }}
+          Storage: {{ storage.data_disks | length }} data disks
+
+  roles:
+    - proxmox_host_setup
+    - zfs_storage_config
+    - proxmox_vm_management
+    - web_ui_deployment
+
+  post_tasks:
+    - name: Deployment summary
+      debug:
+        msg: |
+          Proxmox NAS deployment complete!
+          Access TrueNAS at: https://{{ network.ip_range | ipaddr('1') | ipaddr('address') }}
+          GitOps repository: {{ gitops.repo_url | default('Not configured') }}
+
+    - name: Save deployment state
+      copy:
+        content: |
+          Deployment completed at: {{ ansible_date_time.iso8601 }}
+          Site: {{ site_name }}
+          Status: SUCCESS
+        dest: /var/log/proxmox-nas-deployment.log

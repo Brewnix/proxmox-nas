@@ -1,0 +1,151 @@
+---
+# ZFS Storage Configuration Tasks
+# Setup and configure ZFS pools and datasets for NAS
+
+- name: Verify ZFS is available
+  ansible.builtin.command: zfs version
+  register: zfs_check
+  failed_when: zfs_check.rc != 0
+  changed_when: false
+
+- name: Create system ZFS pool (no RAID)
+  community.general.zpool:
+    name: system
+    state: present
+    devices: "{{ storage.system_disks }}"
+    mountpoint: /system
+  when:
+    - storage.system_disks is defined
+    - storage.system_disks | length > 0
+    - storage.system_raid | default('none') != 'mirror' or storage.system_disks | length == 1
+
+- name: Setup Linux RAID for system disks (optional)
+  ansible.builtin.command: mdadm --create /dev/md0 --level=1 --raid-devices={{ storage.system_disks | length }} {{ storage.system_disks | join(' ') }}
+  when: storage.system_raid | default('none') == 'mirror' and storage.system_disks | length > 1
+  args:
+    creates: /dev/md0
+
+- name: Wait for RAID sync to complete
+  ansible.builtin.pause:
+    seconds: 10
+  when: storage.system_raid | default('none') == 'mirror' and storage.system_disks | length > 1
+
+- name: Create system ZFS pool on RAID
+  community.general.zpool:
+    name: system
+    state: present
+    devices: ["/dev/md0"]
+    mountpoint: /system
+  when:
+    - storage.system_raid | default('none') == 'mirror'
+    - storage.system_disks | length > 1
+
+- name: Create data ZFS pool with hot spares
+  community.general.zpool:
+    name: data
+    state: present
+    devices: "{{ storage.data_disks }}"
+    spare: "{{ storage.hot_spare_disks | default([]) }}"
+    raid: "{{ storage.raid_level | default('raidz1') }}"
+    mountpoint: /data
+  when: storage.data_disks is defined and storage.data_disks | length > 0
+
+- name: Add SLOG device to data pool
+  community.general.zpool:
+    name: data
+    state: present
+    log: "{{ storage.slog_devices }}"
+  when: storage.slog_devices is defined and storage.slog_devices | length > 0
+
+- name: Add L2ARC device to data pool
+  community.general.zpool:
+    name: data
+    state: present
+    cache: "{{ storage.l2arc_devices }}"
+  when: storage.l2arc_devices is defined and storage.l2arc_devices | length > 0
+
+- name: Configure ZFS pool properties
+  community.general.zfs:
+    name: "{{ item.pool }}"
+    state: present
+    extra_zfs_properties:
+      compression: lz4
+      atime: "off"
+      xattr: sa
+      acltype: posixacl
+  loop:
+    - pool: system
+    - pool: data
+  when: item.pool in ansible_zfs_pools
+
+- name: Create ZFS datasets
+  community.general.zfs:
+    name: "{{ item.name }}"
+    state: present
+    extra_zfs_properties:
+      compression: lz4
+      recordsize: "{{ item.recordsize | default('1M') }}"
+      quota: "{{ item.quota | default(omit) }}"
+  loop:
+    - name: data/nas-data
+      recordsize: 1M
+    - name: data/vm-storage
+      recordsize: 64K
+    - name: data/container-storage
+      recordsize: 64K
+    - name: data/backup
+      recordsize: 1M
+      compression: gzip
+    - name: system/vm-storage
+      recordsize: 64K
+    - name: system/container-storage
+      recordsize: 64K
+
+- name: Set ZFS dataset permissions
+  ansible.builtin.file:
+    path: "/{{ item }}"
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  loop:
+    - data/nas-data
+    - data/vm-storage
+    - data/container-storage
+    - data/backup
+    - system/vm-storage
+    - system/container-storage
+
+- name: Configure ZFS snapshots
+  community.general.zfs:
+    name: "{{ item }}"
+    state: present
+    extra_zfs_properties:
+      snapdir: visible
+  loop:
+    - data/nas-data
+    - data/vm-storage
+    - data/container-storage
+
+- name: Setup ZFS snapshot script
+  ansible.builtin.template:
+    src: zfs-snapshot.j2
+    dest: /usr/local/bin/zfs-snapshot.sh
+    mode: '0755'
+
+- name: Configure automatic snapshots
+  ansible.builtin.cron:
+    name: "Daily ZFS snapshots"
+    minute: "0"
+    hour: "2"
+    job: "/usr/local/bin/zfs-snapshot.sh daily"
+    state: present
+
+- name: Configure ZFS scrub
+  ansible.builtin.cron:
+    name: "Weekly ZFS scrub"
+    minute: "0"
+    hour: "3"
+    weekday: "0"
+    job: "/usr/local/sbin/zpool scrub data"
+    state: present

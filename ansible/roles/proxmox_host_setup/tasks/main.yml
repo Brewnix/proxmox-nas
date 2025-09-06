@@ -1,0 +1,77 @@
+---
+# Proxmox Host Setup Tasks
+# Configure Proxmox host for NAS operations
+
+- name: Install required packages
+  apt:
+    name:
+      - zfsutils-linux
+      - zfs-dkms
+      - qemu-guest-agent
+      - smartmontools
+      - hdparm
+      - lm-sensors
+    state: present
+    update_cache: true
+
+- name: Configure ZFS module loading
+  copy:
+    content: |
+      zfs
+      zfs_dkms
+    dest: /etc/modules-load.d/zfs.conf
+
+- name: Load ZFS modules
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - zfs
+
+- name: Configure Proxmox storage
+  community.general.proxmox_storage:
+    api_host: "{{ proxmox_api_host | default('localhost') }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    name: "{{ item.name }}"
+    type: "{{ item.type }}"
+    content: "{{ item.content }}"
+    nodes: "{{ item.nodes | default([inventory_hostname]) }}"
+    state: present
+  loop:
+    - name: local-zfs
+      type: zfspool
+      content: "{{ storage_content | default('images,rootdir,iso,vztmpl,backup,snippets') }}"
+      nodes: "{{ [inventory_hostname] }}"
+  when: proxmox_api_password is defined
+
+- name: Configure network interfaces
+  ansible.builtin.template:
+    src: interfaces.j2
+    dest: /etc/network/interfaces
+  notify: restart networking
+
+- name: Configure firewall rules
+  community.general.proxmox_firewall_rules:
+    api_host: "{{ proxmox_api_host | default('localhost') }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    rules:
+      - action: ACCEPT
+        type: in
+        iface: "{{ network.interface | default('vmbr0') }}"
+        source: "{{ network.ip_range }}"
+        comment: "Allow NAS network traffic"
+    state: present
+  when: proxmox_api_password is defined
+
+- name: Setup monitoring
+  ansible.builtin.include_tasks: monitoring.yml
+
+- name: Configure backup schedules
+  ansible.builtin.cron:
+    name: "ZFS snapshot backup"
+    minute: "0"
+    hour: "2"
+    job: "/usr/local/bin/zfs-backup.sh"
+    state: present

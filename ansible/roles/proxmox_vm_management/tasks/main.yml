@@ -1,0 +1,127 @@
+---
+# Proxmox VM/Container Management Tasks
+# GitOps-driven VM and container lifecycle management
+
+- name: Ensure Proxmox API access
+  ansible.builtin.assert:
+    that:
+      - proxmox_api_password is defined
+      - proxmox_api_host is defined
+    fail_msg: "Proxmox API credentials not configured"
+
+- name: Deploy VMs
+  community.general.proxmox_kvm:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    name: "{{ item.name }}"
+    node: "{{ item.node | default(inventory_hostname) }}"
+    vmid: "{{ item.vmid | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+    cores: "{{ item.cores | default(2) }}"
+    memory: "{{ item.memory | default(2048) }}"
+    disk: "{{ item.disk | default('local-zfs:10') }}"
+    net: "{{ item.net | default('net0=virtio,bridge=vmbr0') }}"
+    ostype: "{{ item.ostype | default('l26') }}"
+    clone: "{{ item.clone | default(omit) }}"
+    template: "{{ item.template | default(omit) }}"
+  loop: "{{ proxmox_vms | default([]) }}"
+  when: proxmox_vms is defined
+
+- name: Deploy LXC containers
+  community.general.proxmox_lxc:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    node: "{{ item.node | default(inventory_hostname) }}"
+    vmid: "{{ item.vmid | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+    hostname: "{{ item.name }}"
+    ostemplate: "{{ item.ostemplate }}"
+    storage: "{{ item.storage | default('local-zfs') }}"
+    memory: "{{ item.memory | default(512) }}"
+    cores: "{{ item.cores | default(1) }}"
+    netif: "{{ item.netif | default('net0=name=eth0,bridge=vmbr0,ip=dhcp') }}"
+    features: "{{ item.features | default('nesting=1') }}"
+  loop: "{{ proxmox_lxc | default([]) }}"
+  when: proxmox_lxc is defined
+
+- name: Configure VM/container networking
+  community.general.proxmox_nic:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    vmid: "{{ item.vmid }}"
+    interface: "{{ item.interface | default('net0') }}"
+    bridge: "{{ item.bridge | default('vmbr0') }}"
+    vlan: "{{ item.vlan | default(omit) }}"
+    state: present
+  loop: "{{ proxmox_network_config | default([]) }}"
+  when: proxmox_network_config is defined
+
+- name: Configure VM/container disks
+  community.general.proxmox_disk:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    vmid: "{{ item.vmid }}"
+    disk: "{{ item.disk }}"
+    type: "{{ item.type | default('virtio') }}"
+    storage: "{{ item.storage | default('local-zfs') }}"
+    size: "{{ item.size }}"
+    state: present
+  loop: "{{ proxmox_disk_config | default([]) }}"
+  when: proxmox_disk_config is defined
+
+- name: Create VM/container snapshots
+  community.general.proxmox_snap:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    vmid: "{{ item.vmid }}"
+    snapname: "{{ item.name }}"
+    description: "{{ item.description | default('GitOps snapshot') }}"
+    state: present
+  loop: "{{ proxmox_snapshots | default([]) }}"
+  when: proxmox_snapshots is defined
+
+- name: Configure backup schedules
+  community.general.proxmox_backup:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    node: "{{ item.node | default(inventory_hostname) }}"
+    name: "{{ item.name }}"
+    storage: "{{ item.storage | default('local-zfs') }}"
+    schedule: "{{ item.schedule | default('daily') }}"
+    mode: "{{ item.mode | default('snapshot') }}"
+    vmid: "{{ item.vmid | default(omit) }}"
+    state: present
+  loop: "{{ proxmox_backups | default([]) }}"
+  when: proxmox_backups is defined
+
+- name: Start VMs/containers
+  community.general.proxmox_kvm:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    name: "{{ item.name }}"
+    node: "{{ item.node | default(inventory_hostname) }}"
+    state: started
+  loop: "{{ proxmox_vms | default([]) }}"
+  when:
+    - proxmox_vms is defined
+    - item.state | default('present') != 'absent'
+
+- name: Start LXC containers
+  community.general.proxmox_lxc:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    hostname: "{{ item.name }}"
+    node: "{{ item.node | default(inventory_hostname) }}"
+    state: started
+  loop: "{{ proxmox_lxc | default([]) }}"
+  when:
+    - proxmox_lxc is defined
+    - item.state | default('present') != 'absent'
