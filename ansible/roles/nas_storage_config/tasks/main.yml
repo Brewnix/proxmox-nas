@@ -11,15 +11,56 @@
       - smartmontools
       - hdparm
       - nvme-cli
+      - zfsutils-linux
+      - mdadm
     state: present
+    update_cache: true
 
-- name: Configure ZFS pools for NAS
+- name: Verify ZFS is available
+  ansible.builtin.command: zfs version
+  register: zfs_check
+  failed_when: zfs_check.rc != 0
+  changed_when: false
+
+- name: Create ZFS pools for NAS storage
+  ansible.builtin.shell: |
+    zpool create {{ item.name }} {{ item.raid_level | default('raidz1') }} {{ item.devices | join(' ') }}
+  register: zpool_result
+  changed_when: "'already exists' not in zpool_result.stderr"
+  failed_when:
+    - zpool_result.rc != 0
+    - "'already exists' not in zpool_result.stderr"
+  loop: "{{ nas_zfs_pools | default([]) }}"
+
+- name: Add SLOG devices to ZFS pools
+  ansible.builtin.shell: |
+    zpool add {{ item.pool }} log {{ item.devices | join(' ') }}
+  register: slog_result
+  changed_when: "'already exists' not in slog_result.stderr"
+  failed_when:
+    - slog_result.rc != 0
+    - "'already exists' not in slog_result.stderr"
+  loop: "{{ nas_slog_devices | default([]) }}"
+
+- name: Add L2ARC devices to ZFS pools
+  ansible.builtin.shell: |
+    zpool add {{ item.pool }} cache {{ item.devices | join(' ') }}
+  register: l2arc_result
+  changed_when: "'already exists' not in l2arc_result.stderr"
+  failed_when:
+    - l2arc_result.rc != 0
+    - "'already exists' not in l2arc_result.stderr"
+  loop: "{{ nas_l2arc_devices | default([]) }}"
+
+- name: Configure ZFS pool properties
   community.general.zfs:
     name: "{{ item.name }}"
     state: present
     extra_zfs_properties:
       compression: "{{ item.compression | default('lz4') }}"
       atime: "{{ item.atime | default('off') }}"
+      xattr: sa
+      acltype: posixacl
       recordsize: "{{ item.recordsize | default('128K') }}"
       redundant_metadata: "{{ item.redundant_metadata | default('most') }}"
   loop: "{{ nas_zfs_pools | default([]) }}"
@@ -33,7 +74,28 @@
       sharenfs: "{{ item.sharenfs | default('off') }}"
       sharesmb: "{{ item.sharesmb | default('off') }}"
       quota: "{{ item.quota | default('none') }}"
+      compression: "{{ item.compression | default('lz4') }}"
+      recordsize: "{{ item.recordsize | default('1M') }}"
+      snapdir: visible
   loop: "{{ nas_datasets | default([]) }}"
+
+- name: Create default NAS datasets
+  community.general.zfs:
+    name: "{{ nas_default_pool | default('tank') }}/{{ item.name }}"
+    state: present
+    extra_zfs_properties:
+      mountpoint: "{{ item.mountpoint }}"
+      compression: "{{ item.compression | default('lz4') }}"
+      recordsize: "{{ item.recordsize | default('1M') }}"
+      snapdir: visible
+  loop:
+    - { name: "nas-data", mountpoint: "/nas-data" }
+    - { name: "media", mountpoint: "/nas-data/media" }
+    - { name: "documents", mountpoint: "/nas-data/documents" }
+    - { name: "backups", mountpoint: "/nas-data/backups", compression: "gzip" }
+    - { name: "nextcloud", mountpoint: "/nas-data/nextcloud" }
+    - { name: "jellyfin-config", mountpoint: "/nas-data/jellyfin-config", recordsize: "64K" }
+    - { name: "vm-storage", mountpoint: "/nas-data/vm-storage", recordsize: "64K" }
 
 - name: Configure NFS exports
   ansible.builtin.lineinfile:
@@ -52,13 +114,13 @@
   notify: Restart samba
   when: samba_shares is defined
 
-- name: Create NAS data directories
+- name: Set ZFS dataset permissions
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
     mode: '0755'
-    owner: nobody
-    group: nogroup
+    owner: root
+    group: root
   loop:
     - /nas-data
     - /nas-data/media
@@ -66,18 +128,40 @@
     - /nas-data/backups
     - /nas-data/nextcloud
     - /nas-data/jellyfin-config
-    - /nas-data/plex-config
+    - /nas-data/vm-storage
 
-- name: Configure disk monitoring
+- name: Setup ZFS snapshot script
+  ansible.builtin.template:
+    src: zfs-snapshot.sh.j2
+    dest: /usr/local/bin/zfs-snapshot.sh
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Configure automatic ZFS snapshots
+  ansible.builtin.cron:
+    name: "{{ item.name }}"
+    minute: "{{ item.minute }}"
+    hour: "{{ item.hour }}"
+    weekday: "{{ item.weekday | default('*') }}"
+    job: "/usr/local/bin/zfs-snapshot.sh {{ item.type }}"
+    state: present
+    user: root
+  loop:
+    - { name: "Hourly ZFS snapshots", minute: "0", hour: "*", type: "hourly" }
+    - { name: "Daily ZFS snapshots", minute: "0", hour: "2", type: "daily" }
+    - { name: "Weekly ZFS snapshots", minute: "0", hour: "3", weekday: "0", type: "weekly" }
+
+- name: Configure disk monitoring with SMART
   ansible.builtin.cron:
     name: "SMART disk monitoring"
     minute: "0"
     hour: "*/6"
-    job: "/usr/sbin/smartctl -a /dev/sda | grep -i error || echo 'No errors'"
+    job: "/usr/local/bin/smart-check.sh >> /var/log/smart-check.log 2>&1"
     state: present
     user: root
 
-- name: Configure automatic scrubbing
+- name: Configure automatic ZFS scrubbing
   ansible.builtin.cron:
     name: "ZFS scrub {{ item }}"
     minute: "0"
@@ -86,4 +170,16 @@
     job: "/sbin/zpool scrub {{ item }}"
     state: present
     user: root
-  loop: "{{ zfs_pools | default(['tank']) }}"
+  loop: "{{ nas_zfs_pools | map(attribute='name') | list | default(['tank']) }}"
+
+- name: Enable and start NFS server
+  ansible.builtin.systemd:
+    name: nfs-kernel-server
+    state: started
+    enabled: true
+
+- name: Enable and start Samba
+  ansible.builtin.systemd:
+    name: smbd
+    state: started
+    enabled: true
