@@ -1,6 +1,6 @@
 ---
-# Proxmox VM/Container Management Tasks
-# GitOps-driven VM and container lifecycle management
+# Enhanced Proxmox VM/Container Management Tasks
+# GitOps-driven VM and container lifecycle management with service framework
 
 - name: Ensure Proxmox API access
   ansible.builtin.assert:
@@ -9,7 +9,251 @@
       - proxmox_api_host is defined
     fail_msg: "Proxmox API credentials not configured"
 
-- name: Deploy VMs
+- name: Configure Proxmox repositories (community)
+  ansible.builtin.template:
+    src: sources.list.j2
+    dest: /etc/apt/sources.list.d/pve-community.list
+    backup: true
+  vars:
+    pve_repository_type: "community"
+  notify: update package cache
+
+- name: Remove enterprise repositories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/apt/sources.list.d/pve-enterprise.list
+    - /etc/apt/sources.list.d/ceph.list
+  notify: update package cache
+
+- name: Install additional Proxmox packages
+  ansible.builtin.apt:
+    name:
+      - proxmox-backup-client
+      - pve-qemu-kvm
+      - qemu-server
+      - pve-container
+    state: present
+    update_cache: true
+
+# Service VMs and Containers Framework
+- name: Deploy service VMs
+  community.general.proxmox_kvm:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    name: "{{ item.name }}"
+    node: "{{ item.node | default(inventory_hostname) }}"
+    vmid: "{{ item.vmid }}"
+    state: "{{ item.state | default('present') }}"
+    cores: "{{ item.cores | default(2) }}"
+    memory: "{{ item.memory | default(2048) }}"
+    balloon: "{{ item.balloon | default(512) }}"
+    scsihw: "{{ item.scsihw | default('virtio-scsi-pci') }}"
+    net: "{{ item.net | default('net0=virtio,bridge=vmbr0,firewall=1') }}"
+    ostype: "{{ item.ostype | default('l26') }}"
+    boot: "{{ item.boot | default('order=scsi0;ide2;net0') }}"
+    onboot: "{{ item.onboot | default(true) }}"
+    protection: "{{ item.protection | default(false) }}"
+    # Storage configuration
+    scsi: "{{ item.storage_config | default('scsi0=' + item.disk | default('local-zfs:20,cache=writeback,iothread=1')) }}"
+    # Cloud-init support for modern VMs
+    ide: "{{ item.cloudinit | default('ide2=local-zfs:cloudinit') if item.cloudinit_enabled | default(false) else omit }}"
+    ciuser: "{{ item.ciuser | default(omit) }}"
+    cipassword: "{{ item.cipassword | default(omit) }}"
+    sshkeys: "{{ item.sshkeys | default(omit) }}"
+    ipconfig: "{{ item.ipconfig | default(omit) }}"
+    # Service-specific configuration
+    cpu: "{{ item.cpu_type | default('host') }}"
+    vga: "{{ item.vga | default('serial0') }}"
+    serial: "{{ item.serial | default('socket') }}"
+    tags: "{{ item.tags | default(item.service_type | default('vm')) }}"
+  loop: "{{ service_vms | default([]) }}"
+  register: vm_deployment_results
+  when: service_vms is defined
+
+- name: Deploy service containers (LXC)
+  community.general.proxmox_lxc:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    node: "{{ item.node | default(inventory_hostname) }}"
+    vmid: "{{ item.vmid }}"
+    hostname: "{{ item.name }}"
+    state: "{{ item.state | default('present') }}"
+    ostemplate: "{{ item.ostemplate }}"
+    storage: "{{ item.storage | default('local-zfs') }}"
+    memory: "{{ item.memory | default(512) }}"
+    swap: "{{ item.swap | default(512) }}"
+    cores: "{{ item.cores | default(1) }}"
+    disk: "{{ item.disk | default('8') }}"
+    netif: "{{ item.netif | default('net0=name=eth0,bridge=vmbr0,ip=dhcp,firewall=1') }}"
+    features: "{{ item.features | default(['nesting=1', 'mount=nfs;cifs']) }}"
+    onboot: "{{ item.onboot | default(true) }}"
+    protection: "{{ item.protection | default(false) }}"
+    unprivileged: "{{ item.unprivileged | default(true) }}"
+    startup: "{{ item.startup | default('order=3,up=30') }}"
+    tags: "{{ item.tags | default(item.service_type | default('container')) }}"
+    # Service-specific mounts
+    mounts: "{{ item.mounts | default({}) }}"
+  loop: "{{ service_containers | default([]) }}"
+  register: container_deployment_results
+  when: service_containers is defined
+
+# Service-specific configurations
+- name: Configure TrueNAS VM
+  community.general.proxmox_kvm:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    name: "truenas"
+    node: "{{ inventory_hostname }}"
+    vmid: "{{ truenas.vm_id | default(100) }}"
+    state: present
+    cores: "{{ truenas.cores | default(4) }}"
+    memory: "{{ truenas.memory | default(8192) }}"
+    balloon: 2048
+    scsihw: virtio-scsi-pci
+    net: net0=virtio,bridge=vmbr0,firewall=1
+    ostype: other
+    boot: order=scsi0;ide2;net0
+    onboot: true
+    # Storage passthrough for ZFS
+    scsi: |
+      {% if truenas.zfs_passthrough | default(true) %}
+      {% for disk in storage.data_disks | default([]) %}
+      scsi{{ loop.index }}={{ disk }},serial={{ disk | basename }}
+      {% endfor %}
+      {% else %}
+      scsi0=local-zfs:{{ truenas.disk_size | default('100G') }},cache=writeback,iothread=1
+      {% endif %}
+    # Additional configuration for hardware passthrough
+    cpu: host
+    vga: serial0
+    serial: socket
+    tags: truenas,nas,storage
+  when:
+    - services.truenas | default(false)
+    - truenas is defined
+
+- name: Configure Proxmox Backup Server VM
+  community.general.proxmox_kvm:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    name: "pbs"
+    node: "{{ inventory_hostname }}"
+    vmid: "{{ proxmox_backup_server.vm_id | default(110) }}"
+    state: present
+    cores: "{{ proxmox_backup_server.cores | default(4) }}"
+    memory: "{{ proxmox_backup_server.memory | default(4096) }}"
+    balloon: 1024
+    scsihw: virtio-scsi-pci
+    net: net0=virtio,bridge=vmbr0,firewall=1
+    ostype: l26
+    boot: order=scsi0;ide2;net0
+    onboot: true
+    scsi: |
+      scsi0=local-zfs:{{ proxmox_backup_server.os_disk_size | default('32G') }},cache=writeback,iothread=1
+      {% if proxmox_backup_server.backup_disks is defined %}
+      {% for disk in proxmox_backup_server.backup_disks %}
+      scsi{{ loop.index + 1 }}={{ disk }},serial={{ disk | basename }}
+      {% endfor %}
+      {% else %}
+      scsi1=local-zfs:{{ proxmox_backup_server.backup_disk_size | default('500G') }},cache=writeback,iothread=1
+      {% endif %}
+    cpu: host
+    vga: serial0
+    serial: socket
+    tags: pbs,backup,storage
+  when:
+    - services.proxmox_backup_server | default(false)
+    - proxmox_backup_server is defined
+
+- name: Configure Nextcloud container
+  community.general.proxmox_lxc:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    node: "{{ inventory_hostname }}"
+    vmid: "{{ nextcloud.container_id | default(201) }}"
+    hostname: "nextcloud"
+    state: present
+    ostemplate: "local:vztmpl/debian-12-standard_12.0-1_amd64.tar.zst"
+    storage: local-zfs
+    memory: "{{ nextcloud.memory | default(2048) }}"
+    swap: 512
+    cores: "{{ nextcloud.cores | default(2) }}"
+    disk: "{{ nextcloud.disk_size | default('20') }}"
+    netif: net0=name=eth0,bridge=vmbr0,ip=dhcp,firewall=1
+    features:
+      - nesting=1
+      - mount=nfs;cifs
+    onboot: true
+    startup: order=5,up=30
+    tags: nextcloud,web,storage
+    mounts: |
+      {% if nextcloud.data_mount is defined %}
+      mp0={{ nextcloud.data_mount.source }},mp={{ nextcloud.data_mount.target | default('/var/lib/nextcloud/data') }},backup=1
+      {% endif %}
+  when:
+    - services.nextcloud | default(false)
+    - nextcloud is defined
+
+- name: Configure Coder container
+  community.general.proxmox_lxc:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    node: "{{ inventory_hostname }}"
+    vmid: "{{ coder.container_id | default(202) }}"
+    hostname: "coder"
+    state: present
+    ostemplate: "local:vztmpl/debian-12-standard_12.0-1_amd64.tar.zst"
+    storage: local-zfs
+    memory: "{{ coder.memory | default(2048) }}"
+    swap: 512
+    cores: "{{ coder.cores | default(2) }}"
+    disk: "{{ coder.disk_size | default('20') }}"
+    netif: net0=name=eth0,bridge=vmbr0,ip=dhcp,firewall=1
+    features:
+      - nesting=1
+      - docker=1
+    onboot: true
+    startup: order=6,up=30
+    tags: coder,development,vscode
+  when:
+    - services.coder | default(false)
+    - coder is defined
+
+- name: Configure Memos container
+  community.general.proxmox_lxc:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user | default('root@pam') }}"
+    api_password: "{{ proxmox_api_password }}"
+    node: "{{ inventory_hostname }}"
+    vmid: "{{ memos.container_id | default(203) }}"
+    hostname: "memos"
+    state: present
+    ostemplate: "local:vztmpl/debian-12-standard_12.0-1_amd64.tar.zst"
+    storage: local-zfs
+    memory: "{{ memos.memory | default(512) }}"
+    swap: 256
+    cores: "{{ memos.cores | default(1) }}"
+    disk: "{{ memos.disk_size | default('8') }}"
+    netif: net0=name=eth0,bridge=vmbr0,ip=dhcp,firewall=1
+    features:
+      - nesting=1
+    onboot: true
+    startup: order=7,up=30
+    tags: memos,notes,web
+  when:
+    - services.memos | default(false)
+    - memos is defined
+
+# Legacy VM/Container support (backward compatibility)
+- name: Deploy legacy VMs
   community.general.proxmox_kvm:
     api_host: "{{ proxmox_api_host }}"
     api_user: "{{ proxmox_api_user | default('root@pam') }}"
@@ -20,15 +264,16 @@
     state: "{{ item.state | default('present') }}"
     cores: "{{ item.cores | default(2) }}"
     memory: "{{ item.memory | default(2048) }}"
-    disk: "{{ item.disk | default('local-zfs:10') }}"
+    scsi: "{{ item.disk | default('local-zfs:10,cache=writeback') }}"
     net: "{{ item.net | default('net0=virtio,bridge=vmbr0') }}"
     ostype: "{{ item.ostype | default('l26') }}"
     clone: "{{ item.clone | default(omit) }}"
     template: "{{ item.template | default(omit) }}"
+    onboot: "{{ item.onboot | default(false) }}"
   loop: "{{ proxmox_vms | default([]) }}"
   when: proxmox_vms is defined
 
-- name: Deploy LXC containers
+- name: Deploy legacy LXC containers
   community.general.proxmox_lxc:
     api_host: "{{ proxmox_api_host }}"
     api_user: "{{ proxmox_api_user | default('root@pam') }}"
@@ -43,64 +288,38 @@
     cores: "{{ item.cores | default(1) }}"
     netif: "{{ item.netif | default('net0=name=eth0,bridge=vmbr0,ip=dhcp') }}"
     features: "{{ item.features | default('nesting=1') }}"
+    onboot: "{{ item.onboot | default(false) }}"
   loop: "{{ proxmox_lxc | default([]) }}"
   when: proxmox_lxc is defined
 
-- name: Configure VM/container networking
-  community.general.proxmox_nic:
-    api_host: "{{ proxmox_api_host }}"
-    api_user: "{{ proxmox_api_user | default('root@pam') }}"
-    api_password: "{{ proxmox_api_password }}"
-    vmid: "{{ item.vmid }}"
-    interface: "{{ item.interface | default('net0') }}"
-    bridge: "{{ item.bridge | default('vmbr0') }}"
-    vlan: "{{ item.vlan | default(omit) }}"
-    state: present
-  loop: "{{ proxmox_network_config | default([]) }}"
-  when: proxmox_network_config is defined
+# Service management and validation
+- name: Wait for VMs to be ready
+  ansible.builtin.wait_for:
+    host: "{{ item.ip_address | default(item.name + '.' + site_name + '.local') }}"
+    port: 22
+    timeout: 300
+    delay: 30
+  loop: "{{ service_vms | default([]) }}"
+  when:
+    - service_vms is defined
+    - item.state | default('present') == 'present'
+    - item.wait_for_ssh | default(false)
 
-- name: Configure VM/container disks
-  community.general.proxmox_disk:
-    api_host: "{{ proxmox_api_host }}"
-    api_user: "{{ proxmox_api_user | default('root@pam') }}"
-    api_password: "{{ proxmox_api_password }}"
-    vmid: "{{ item.vmid }}"
-    disk: "{{ item.disk }}"
-    type: "{{ item.type | default('virtio') }}"
-    storage: "{{ item.storage | default('local-zfs') }}"
-    size: "{{ item.size }}"
-    state: present
-  loop: "{{ proxmox_disk_config | default([]) }}"
-  when: proxmox_disk_config is defined
-
-- name: Create VM/container snapshots
+- name: Create service snapshots
   community.general.proxmox_snap:
     api_host: "{{ proxmox_api_host }}"
     api_user: "{{ proxmox_api_user | default('root@pam') }}"
     api_password: "{{ proxmox_api_password }}"
     vmid: "{{ item.vmid }}"
-    snapname: "{{ item.name }}"
-    description: "{{ item.description | default('GitOps snapshot') }}"
+    snapname: "initial-{{ ansible_date_time.epoch }}"
+    description: "Initial deployment snapshot - {{ ansible_date_time.iso8601 }}"
     state: present
-  loop: "{{ proxmox_snapshots | default([]) }}"
-  when: proxmox_snapshots is defined
+  loop: "{{ (service_vms | default([])) + (service_containers | default([])) }}"
+  when:
+    - item.state | default('present') == 'present'
+    - item.create_snapshot | default(true)
 
-- name: Configure backup schedules
-  community.general.proxmox_backup:
-    api_host: "{{ proxmox_api_host }}"
-    api_user: "{{ proxmox_api_user | default('root@pam') }}"
-    api_password: "{{ proxmox_api_password }}"
-    node: "{{ item.node | default(inventory_hostname) }}"
-    name: "{{ item.name }}"
-    storage: "{{ item.storage | default('local-zfs') }}"
-    schedule: "{{ item.schedule | default('daily') }}"
-    mode: "{{ item.mode | default('snapshot') }}"
-    vmid: "{{ item.vmid | default(omit) }}"
-    state: present
-  loop: "{{ proxmox_backups | default([]) }}"
-  when: proxmox_backups is defined
-
-- name: Start VMs/containers
+- name: Start deployed services
   community.general.proxmox_kvm:
     api_host: "{{ proxmox_api_host }}"
     api_user: "{{ proxmox_api_user | default('root@pam') }}"
@@ -108,12 +327,13 @@
     name: "{{ item.name }}"
     node: "{{ item.node | default(inventory_hostname) }}"
     state: started
-  loop: "{{ proxmox_vms | default([]) }}"
+  loop: "{{ service_vms | default([]) }}"
   when:
-    - proxmox_vms is defined
+    - service_vms is defined
     - item.state | default('present') != 'absent'
+    - item.autostart | default(true)
 
-- name: Start LXC containers
+- name: Start deployed containers
   community.general.proxmox_lxc:
     api_host: "{{ proxmox_api_host }}"
     api_user: "{{ proxmox_api_user | default('root@pam') }}"
@@ -121,7 +341,38 @@
     hostname: "{{ item.name }}"
     node: "{{ item.node | default(inventory_hostname) }}"
     state: started
-  loop: "{{ proxmox_lxc | default([]) }}"
+  loop: "{{ service_containers | default([]) }}"
   when:
-    - proxmox_lxc is defined
+    - service_containers is defined
     - item.state | default('present') != 'absent'
+    - item.autostart | default(true)
+
+# Post-deployment service validation
+- name: Validate service deployment
+  ansible.builtin.uri:
+    url: "http://{{ item.validation.host | default(item.name + '.' + site_name + '.local') }}:{{ item.validation.port }}/{{ item.validation.path | default('') }}"
+    method: "{{ item.validation.method | default('GET') }}"
+    status_code: "{{ item.validation.expected_status | default(200) }}"
+    timeout: 10
+  loop: "{{ (service_vms | default([])) + (service_containers | default([])) }}"
+  when:
+    - item.validation is defined
+    - item.state | default('present') == 'present'
+  ignore_errors: true
+  register: service_validation_results
+
+- name: Display service deployment summary
+  ansible.builtin.debug:
+    msg: |
+      Service Deployment Summary:
+      ==========================
+      VMs deployed: {{ (service_vms | default([])) | length }}
+      Containers deployed: {{ (service_containers | default([])) | length }}
+
+      Services:
+      {% for vm in service_vms | default([]) %}
+      - {{ vm.name }} (VM {{ vm.vmid }}): {{ vm.state | default('present') }}
+      {% endfor %}
+      {% for container in service_containers | default([]) %}
+      - {{ container.name }} (LXC {{ container.vmid }}): {{ container.state | default('present') }}
+      {% endfor %}

@@ -1,0 +1,189 @@
+# NAS-Specific Service Definitions
+# Services specifically for Network Attached Storage deployments
+# Focused on storage, backup, and file sharing capabilities
+
+truenas:
+  enabled: false
+  type: vm
+  vmid: 100
+  template: truenas-scale-latest
+  resources:
+    cpu: 4
+    memory: 8192
+    storage: 32
+  network:
+    ip: dhcp
+    bridge: vmbr0
+  disks:
+    passthrough: true  # Pass through physical disks for ZFS
+    additional_storage:
+      - size: 500
+        type: ssd
+        purpose: cache
+  monitoring:
+    enabled: true
+    port: 80
+    path: /api/v2.0/system/info/
+  backup:
+    enabled: true
+    schedule:
+      hour: 1
+      minute: 0
+    retention_days: 7
+    exclude_disks: true  # Don't backup data disks
+
+proxmox_backup_server:
+  enabled: false
+  type: vm
+  vmid: 101
+  template: proxmox-backup-server-latest
+  resources:
+    cpu: 2
+    memory: 4096
+    storage: 100
+  network:
+    ip: dhcp
+    bridge: vmbr0
+  storage:
+    backup_storage:
+      - size: 2000
+        type: hdd
+        mount: /backup
+  monitoring:
+    enabled: true
+    port: 8007
+  backup:
+    enabled: true
+    schedule:
+      hour: 2
+      minute: 0
+    retention_days: 30
+
+nextcloud:
+  enabled: false
+  type: container
+  vmid: 110
+  template: ubuntu-22.04
+  resources:
+    cpu: 2
+    memory: 2048
+    storage: 40
+  network:
+    ip: dhcp
+    bridge: vmbr0
+  ports:
+    - "8080:80"
+    - "8443:443"
+  volumes:
+    - "/nas-data/nextcloud:/var/lib/nextcloud"
+  environment:
+    MYSQL_ROOT_PASSWORD: "secure_password"
+    NEXTCLOUD_ADMIN_USER: "admin"
+  monitoring:
+    enabled: true
+    port: 80
+  backup:
+    enabled: true
+    data_backup_enabled: true
+    data_paths:
+      - "/nas-data/nextcloud"
+
+jellyfin:
+  enabled: false
+  type: container
+  vmid: 111
+  template: ubuntu-22.04
+  resources:
+    cpu: 4
+    memory: 4096
+    storage: 20
+  network:
+    ip: dhcp
+    bridge: vmbr0
+  ports:
+    - "8096:8096"
+  volumes:
+    - "/nas-data/media:/media"
+    - "/nas-data/jellyfin-config:/config"
+  gpu_passthrough: true  # For hardware transcoding
+  monitoring:
+    enabled: true
+    port: 8096
+  backup:
+    enabled: true
+    data_backup_enabled: true
+    data_paths:
+      - "/nas-data/jellyfin-config"
+
+plex:
+  enabled: false
+  type: container
+  vmid: 112
+  template: ubuntu-22.04
+  resources:
+    cpu: 4
+    memory: 4096
+    storage: 20
+  network:
+    ip: dhcp
+    bridge: vmbr0
+  ports:
+    - "32400:32400"
+  volumes:
+    - "/nas-data/media:/media"
+    - "/nas-data/plex-config:/config"
+  gpu_passthrough: true
+  monitoring:
+    enabled: true
+    port: 32400
+  backup:
+    enabled: true
+    data_backup_enabled: true
+    data_paths:
+      - "/nas-data/plex-config"
+
+samba_server:
+  enabled: false
+  type: container
+  vmid: 113
+  template: ubuntu-22.04
+  resources:
+    cpu: 2
+    memory: 1024
+    storage: 10
+  network:
+    ip: dhcp
+    bridge: vmbr0
+  ports:
+    - "445:445"
+    - "139:139"
+  volumes:
+    - "/nas-data:/shares"
+  monitoring:
+    enabled: true
+    port: 445
+  backup:
+    enabled: false  # Data is in NAS shares
+
+ftp_server:
+  enabled: false
+  type: container
+  vmid: 114
+  template: ubuntu-22.04
+  resources:
+    cpu: 1
+    memory: 512
+    storage: 10
+  network:
+    ip: dhcp
+    bridge: vmbr0
+  ports:
+    - "21:21"
+    - "20:20"
+  volumes:
+    - "/nas-data:/ftp"
+  monitoring:
+    enabled: true
+    port: 21
+  backup:
+    enabled: false

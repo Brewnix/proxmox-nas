@@ -1,0 +1,25 @@
+---
+# Ansible handlers for Proxmox VM Management
+
+- name: update package cache
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: restart networking
+  ansible.builtin.systemd:
+    name: networking
+    state: restarted
+
+- name: restart proxmox services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - pvedaemon
+    - pvestatd
+    - pveproxy
+    - spiceproxy
+
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true

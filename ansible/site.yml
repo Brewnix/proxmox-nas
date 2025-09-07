@@ -1,6 +1,6 @@
 ---
 # Proxmox NAS Deployment Playbook
-# Unified GitOps deployment for NAS infrastructure
+# Specific to Network Attached Storage deployments
 
 - name: Deploy Proxmox NAS Infrastructure
   hosts: localhost
@@ -11,40 +11,126 @@
   vars_files:
     - "{{ site_config_file | default('config/sites/nas-site.yml') }}"
 
+  vars:
+    # NAS-specific configuration
+    ansible_roles_path:
+      - "{{ playbook_dir }}/roles"
+      - "{{ playbook_dir }}/../../common/ansible/roles"
+    
+    # Service definitions for NAS
+    enabled_services: "{{ lookup('file', 'services/nas-services.yml') | from_yaml | default({}) }}"
+    
+    # NAS-specific defaults
+    nas_zfs_pools:
+      - name: tank
+        compression: lz4
+        atime: off
+        recordsize: 128K
+    
+    nas_datasets:
+      - pool: tank
+        name: media
+        mountpoint: /nas-data/media
+        sharenfs: "rw,sync,no_subtree_check"
+      - pool: tank
+        name: documents
+        mountpoint: /nas-data/documents
+        sharesmb: "yes"
+      - pool: tank
+        name: backups
+        mountpoint: /nas-data/backups
+        sharenfs: "off"
+
   pre_tasks:
-    - name: Validate site configuration
-      assert:
+    - name: Validate NAS site configuration
+      ansible.builtin.assert:
         that:
           - site_name is defined
           - storage is defined
           - network is defined
-        fail_msg: "Site configuration is incomplete"
+          - proxmox_api_password is defined
+        fail_msg: "NAS site configuration is incomplete"
 
-    - name: Display deployment information
-      debug:
+    - name: Check if running on Proxmox VE
+      ansible.builtin.stat:
+        path: /etc/pve
+      register: pve_check
+      
+    - name: Verify Proxmox VE installation
+      ansible.builtin.fail:
+        msg: "This playbook must be run on a Proxmox VE host"
+      when: not pve_check.stat.exists
+
+    - name: Display NAS deployment information
+      ansible.builtin.debug:
         msg: |
           Deploying Proxmox NAS: {{ site_name }}
-          Network: {{ network.vlan_id }} - {{ network.ip_range }}
+          Network: {{ network.vlan_id | default('N/A') }} - {{ network.ip_range }}
           Storage: {{ storage.data_disks | length }} data disks
+          ZFS Pools: {{ nas_zfs_pools | length }}
+          NAS Services: {{ enabled_services.keys() | list | join(', ') if enabled_services else 'None configured' }}
 
   roles:
-    - proxmox_host_setup
-    - zfs_storage_config
-    - proxmox_vm_management
-    - web_ui_deployment
+    - role: proxmox_host_setup
+      tags:
+        - host_setup
+        - repositories
+        - networking
+        
+    - role: nas_storage_config
+      tags:
+        - storage
+        - zfs
+        - nas_config
+        
+    - role: service_management
+      tags:
+        - services
+        - nas_services
+      vars:
+        service_type: "nas"
 
   post_tasks:
     - name: Deployment summary
-      debug:
+      ansible.builtin.debug:
         msg: |
           Proxmox NAS deployment complete!
+          Host: {{ ansible_fqdn }}
+          Management IP: {{ network.management_ip | default(ansible_default_ipv4.address) }}
           Access TrueNAS at: https://{{ network.ip_range | ipaddr('1') | ipaddr('address') }}
+          {% if enabled_services.truenas is defined and enabled_services.truenas.enabled %}
+          TrueNAS VM ID: {{ enabled_services.truenas.vmid }}
+          {% endif %}
+          {% if enabled_services.proxmox_backup_server is defined and enabled_services.proxmox_backup_server.enabled %}
+          Proxmox Backup Server VM ID: {{ enabled_services.proxmox_backup_server.vmid }}
+          {% endif %}
+          Proxmox Web UI: https://{{ ansible_default_ipv4.address }}:8006
+          Subscription Nag: {{ 'Suppressed' if (suppress_subscription_nag | default(true)) else 'Visible' }}
           GitOps repository: {{ gitops.repo_url | default('Not configured') }}
+          
+          Post-deployment steps:
+          1. Clear browser cache (Ctrl+Shift+Delete)
+          2. Refresh Proxmox web interface (Ctrl+F5)
+          3. Verify nag suppression: /usr/local/bin/verify-nag-suppression.sh
 
     - name: Save deployment state
-      copy:
+      ansible.builtin.copy:
         content: |
+          # Proxmox NAS Deployment Status
           Deployment completed at: {{ ansible_date_time.iso8601 }}
           Site: {{ site_name }}
+          Host: {{ ansible_fqdn }}
+          Repository Type: {{ pve_repository_type }}
+          Services Deployed: {{ enabled_services.keys() | list | join(', ') if enabled_services else 'None' }}
           Status: SUCCESS
         dest: /var/log/proxmox-nas-deployment.log
+        mode: '0644'
+
+    - name: Create service management status
+      ansible.builtin.template:
+        src: service_status.j2
+        dest: /root/service-management-status.yml
+        mode: '0644'
+      vars:
+        deployment_time: "{{ ansible_date_time.iso8601 }}"
+        services: "{{ enabled_services }}"

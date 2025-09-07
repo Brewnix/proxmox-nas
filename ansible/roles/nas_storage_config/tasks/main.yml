@@ -1,0 +1,89 @@
+---
+# NAS Storage Configuration Tasks
+# Specific to Network Attached Storage requirements
+
+- name: Install NAS-specific packages
+  ansible.builtin.apt:
+    name:
+      - nfs-kernel-server
+      - samba
+      - vsftpd
+      - smartmontools
+      - hdparm
+      - nvme-cli
+    state: present
+
+- name: Configure ZFS pools for NAS
+  community.general.zfs:
+    name: "{{ item.name }}"
+    state: present
+    extra_zfs_properties:
+      compression: "{{ item.compression | default('lz4') }}"
+      atime: "{{ item.atime | default('off') }}"
+      recordsize: "{{ item.recordsize | default('128K') }}"
+      redundant_metadata: "{{ item.redundant_metadata | default('most') }}"
+  loop: "{{ nas_zfs_pools | default([]) }}"
+
+- name: Create NAS datasets
+  community.general.zfs:
+    name: "{{ item.pool }}/{{ item.name }}"
+    state: present
+    extra_zfs_properties:
+      mountpoint: "{{ item.mountpoint }}"
+      sharenfs: "{{ item.sharenfs | default('off') }}"
+      sharesmb: "{{ item.sharesmb | default('off') }}"
+      quota: "{{ item.quota | default('none') }}"
+  loop: "{{ nas_datasets | default([]) }}"
+
+- name: Configure NFS exports
+  ansible.builtin.lineinfile:
+    path: /etc/exports
+    line: "{{ item.path }} {{ item.clients }}({{ item.options }})"
+    create: true
+    mode: '0644'
+  loop: "{{ nfs_exports | default([]) }}"
+  notify: Restart nfs server
+
+- name: Configure Samba shares
+  ansible.builtin.template:
+    src: smb.conf.j2
+    dest: /etc/samba/smb.conf
+    mode: '0644'
+  notify: Restart samba
+  when: samba_shares is defined
+
+- name: Create NAS data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+    owner: nobody
+    group: nogroup
+  loop:
+    - /nas-data
+    - /nas-data/media
+    - /nas-data/documents
+    - /nas-data/backups
+    - /nas-data/nextcloud
+    - /nas-data/jellyfin-config
+    - /nas-data/plex-config
+
+- name: Configure disk monitoring
+  ansible.builtin.cron:
+    name: "SMART disk monitoring"
+    minute: "0"
+    hour: "*/6"
+    job: "/usr/sbin/smartctl -a /dev/sda | grep -i error || echo 'No errors'"
+    state: present
+    user: root
+
+- name: Configure automatic scrubbing
+  ansible.builtin.cron:
+    name: "ZFS scrub {{ item }}"
+    minute: "0"
+    hour: "2"
+    weekday: "0"
+    job: "/sbin/zpool scrub {{ item }}"
+    state: present
+    user: root
+  loop: "{{ zfs_pools | default(['tank']) }}"
