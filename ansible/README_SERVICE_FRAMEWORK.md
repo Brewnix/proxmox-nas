@@ -31,9 +31,7 @@ The service management framework consists of:
 │       ├── templates/
 │       └── handlers/
 └── services/                        # Service definition files
-    ├── proxmox-nas.yml              # NAS-specific services
-    ├── proxmox-k3s.yml              # Kubernetes services
-    └── development.yml              # Development environment services
+    └── nas-services.yml              # NAS-specific services
 ```
 
 ## Service Definition Format

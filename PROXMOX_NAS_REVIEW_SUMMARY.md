@@ -64,20 +64,6 @@ roles/
    - Jellyfin (Container)
    - Pi-hole (Container)
 
-2. **Kubernetes Services** (`proxmox-k3s.yml`)
-   - K3S Master/Worker VMs
-   - Longhorn Storage
-   - Rancher Management
-   - ArgoCD
-   - Container Registry
-
-3. **Development Services** (`development.yml`)
-   - VS Code Server
-   - Jupyter Lab
-   - Development Desktop
-   - Git Server
-   - Database Development Environment
-
 ### 5. Comprehensive Monitoring & Backup
 
 #### Monitoring Features
@@ -151,19 +137,6 @@ proxmox_backup_server:
   enabled: true  # Enable Proxmox Backup Server VM
 ```
 
-### 3. Deploy Additional Server Types
-```bash
-# Deploy K3S cluster services
-ansible-playbook site.yml \
-  --extra-vars "enabled_services=$(cat services/proxmox-k3s.yml)" \
-  --tags services
-
-# Deploy development environment
-ansible-playbook site.yml \
-  --extra-vars "enabled_services=$(cat services/development.yml)" \
-  --tags services
-```
-
 ## Technical Benefits
 
 ### 1. Community Repository Compliance
@@ -200,8 +173,6 @@ ansible-playbook site.yml \
 
 ### Service Definitions
 - `services/proxmox-nas.yml` - NAS services including Proxmox Backup Server
-- `services/proxmox-k3s.yml` - Kubernetes cluster services
-- `services/development.yml` - Development environment services
 
 ### Templates & Configuration
 - `templates/sources.list.j2` - Community repository configuration
