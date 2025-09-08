@@ -1,168 +1,191 @@
-# Proxmox NAS
+# BrewNix Submodule Core Template
 
-**Enterprise-grade NAS infrastructure with automated GitOps deployment**
+This template provides the core infrastructure and testing framework for BrewNix submodules, enabling independent development and testing.
 
-A Proxmox-based NAS solution featuring **TrueNAS** with direct ZFS access, providing storage for VMs and containers with optional services like Nextcloud, Coder, Kubo, Memos, and GitLab.
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Ubuntu 20.04+ or similar Linux distribution
-- 16GB+ RAM, 100GB+ SSD for system
-- Multiple HDDs/SSDs for ZFS storage pool
-- Network access for downloading images
-
-### 1. Bootstrap with USB
-
-```bash
-# Create bootable USB with automated setup
-./bootstrap/create-nas-usb.sh
-
-# Boot target system from USB
-# System will auto-configure and register with GitHub
-```
-
-### 2. GitOps Deployment
-
-The system automatically:
-
-- Configures ZFS storage pools
-- Deploys TrueNAS VM with direct ZFS passthrough
-- Sets up optional services (Nextcloud, Coder, etc.)
-- Registers for automated updates via GitHub Actions
-
-## 🏗️ Architecture
-
-### Storage Design
+## Structure
 
 ```text
-Proxmox Host
-├── System Pool (SSD): OS, VMs, containers
-├── Data Pool (HDD/SSD): ZFS datasets for NAS
-│   ├── nas-data: TrueNAS VM storage
-│   ├── vm-storage: VM disks
-│   ├── container-storage: Container volumes
-│   └── backup: Automated backups
-└── Network: VLAN-isolated storage network
+templates/submodule-core/
+├── scripts/
+│   └── core/                 # Core infrastructure modules
+│       ├── init.sh          # Environment initialization
+│       ├── config.sh        # Configuration management
+│       └── logging.sh       # Logging infrastructure
+├── tests/
+│   ├── core/                # Unit tests for core modules
+│   │   ├── test_config.sh   # Configuration module tests
+│   │   └── test_logging.sh  # Logging module tests
+│   └── integration/         # Integration tests
+│       └── test_deployment.sh # Basic deployment tests
+├── validate-config.sh        # Configuration validation script
+├── dev-setup.sh             # Development environment setup
+└── local-test.sh            # Local test execution script
 ```
 
-### Service Stack
+## Usage
 
-- **TrueNAS**: Primary NAS with ZFS management
-- **Nextcloud**: File sharing and collaboration
-- **Coder/Code Server**: Cloud IDE
-- **Kubo**: IPFS node
-- **Memos**: Note-taking service
-- **GitLab**: Self-hosted Git platform
-
-## 📁 Directory Structure
-
-```text
-vendor/proxmox-nas/
-├── bootstrap/           # USB bootstrap automation
-├── ansible/            # Infrastructure deployment
-├── terraform/          # VM/container provisioning
-├── scripts/            # Management utilities
-├── config/             # Configuration templates
-├── docs/               # Documentation
-└── tests/              # Validation tests
-```
-
-## 🔧 Key Features
-
-- **🎯 Automated GitOps Onboarding**: USB boot automatically configures and registers system
-- **💾 ZFS Integration**: Direct passthrough to TrueNAS VM
-- **🌐 Service Mesh**: Optional containerized services
-- **🔄 Auto-Updates**: GitHub Actions for automated deployments
-- **📊 Monitoring**: Integrated logging and metrics
-- **🛡️ Security**: VLAN isolation and access controls
-
-## 🚀 Deployment Process
-
-### Phase 1: Hardware Bootstrap
-
-1. **USB Creation**: Generate bootable USB with site-specific config
-2. **Auto-Setup**: System configures disks, network, and registers with GitHub
-3. **Validation**: Automated health checks and connectivity tests
-
-### Phase 2: Service Deployment
-
-1. **TrueNAS VM**: Deploy with ZFS passthrough
-2. **Storage Setup**: Configure datasets and shares
-3. **Optional Services**: Deploy selected containers
-4. **Integration**: Configure service mesh and networking
-
-### Phase 3: GitOps Operation
-
-1. **Automated Updates**: GitHub Actions for deployments
-2. **Monitoring**: Centralized logging and alerting
-3. **Backup**: Automated ZFS snapshots and replication
-
-## ⚙️ Configuration
-
-### Site Configuration
-
-```yaml
-site:
-  name: "nas-primary"
-  storage:
-    system_disks: ["/dev/sda"]
-    data_disks: ["/dev/sdb", "/dev/sdc", "/dev/sdd"]
-    raid_level: "raidz1"
-  network:
-    vlan_id: 20
-    ip_range: "10.1.20.0/24"
-  services:
-    truenas: true
-    nextcloud: true
-    coder: true
-```
-
-### Service Configuration
-
-Each service has its own configuration template with environment-specific settings.
-
-## 🔒 Security
-
-- **Network Isolation**: VLAN separation for storage traffic
-- **Access Control**: Role-based permissions for services
-- **Encryption**: ZFS encryption for data at rest
-- **Monitoring**: Security event logging and alerting
-
-## 📊 Monitoring
-
-- **System Health**: Proxmox host monitoring
-- **Storage**: ZFS pool and dataset metrics
-- **Services**: Application-specific monitoring
-- **Network**: Traffic analysis and alerting
-
-## 🛠️ Development
-
-### Local Testing
+### 1. Duplicate to a Submodule
 
 ```bash
-# Run validation tests
-./tests/validate-config.sh
+# Copy template to target submodule
+cp -r templates/submodule-core/* vendor/your-submodule/
 
-# Test deployment locally
-./scripts/deploy-local.sh
+# Or use the duplication script (when available)
+./scripts/utilities/duplicate-core.sh vendor/your-submodule
 ```
 
-### Contributing
+### 2. Set Up Development Environment
 
-1. Fork the repository
-2. Create a feature branch
-3. Make changes and test
-4. Submit a pull request
+```bash
+cd vendor/your-submodule
+./dev-setup.sh
+```
 
-## 📚 Documentation
+This will:
 
-- [Deployment Guide](docs/DEPLOYMENT.md)
-- [Configuration Reference](docs/CONFIG.md)
-- [Service Integration](docs/SERVICES.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- Create necessary directories (`logs`, `tmp`, `build`, `test-results`)
+- Set up file permissions
+- Create environment configuration (`.env`)
+- Install Git hooks for validation
+- Set up test environment
 
----
+### 3. Validate Configuration
 
-**Status**: In Development - Reference implementation for improved GitOps design
+```bash
+./validate-config.sh --config path/to/site-config.yml
+```
+
+### 4. Run Local Tests
+
+```bash
+./local-test.sh
+```
+
+This will run:
+
+- Configuration validation
+- Core module unit tests
+- Integration tests
+- Generate test report
+
+## Core Modules
+
+### init.sh
+
+Provides environment initialization and basic utilities:
+
+- `init_environment()` - Set up environment variables
+- `ensure_directory()` - Create directories if they don't exist
+- `check_dependencies()` - Verify required tools are available
+
+### config.sh
+
+Handles YAML configuration file parsing:
+
+- `get_config_value()` - Extract values from YAML config files
+- `validate_config()` - Validate configuration structure
+- `merge_configs()` - Merge multiple configuration sources
+
+### logging.sh
+
+Provides structured logging with different levels:
+
+- `log_error()` - Error messages (always shown)
+- `log_warn()` - Warning messages
+- `log_info()` - Informational messages
+- `log_debug()` - Debug messages (only with VERBOSE=true)
+
+## Testing Framework
+
+### Unit Tests
+
+- `test_config.sh` - Tests configuration loading and parsing
+- `test_logging.sh` - Tests logging functionality and output
+
+### Integration Tests
+
+- `test_deployment.sh` - Tests deployment structure and module loading
+
+### Test Execution
+
+The `local-test.sh` script provides:
+
+- Parallel test execution
+- Test result reporting
+- Automatic cleanup of test artifacts
+- Configurable test suites
+
+## Development Workflow
+
+1. **Setup**: Run `./dev-setup.sh` to initialize the environment
+2. **Develop**: Make changes to submodule-specific code
+3. **Validate**: Run `./validate-config.sh` to check configuration
+4. **Test**: Execute `./local-test.sh` to run test suites
+5. **Commit**: Git hooks will automatically validate before commit
+
+## Synchronization
+
+To keep core modules synchronized with the main template:
+
+```bash
+# Manual sync (when sync script is available)
+./tools/update-core.sh
+
+# Or manual copy
+cp ../../../scripts/core/* ./scripts/core/
+```
+
+## Customization
+
+### Adding New Tests
+
+1. Create test file in appropriate directory (`tests/core/` or `tests/integration/`)
+2. Follow the existing test structure with descriptive function names
+3. Add test to `local-test.sh` if needed
+
+### Extending Core Modules
+
+1. Add new functions to appropriate core module
+2. Update corresponding tests
+3. Update this README with new functionality
+
+### Environment Configuration
+
+Customize `.env` file for submodule-specific settings:
+
+```bash
+# Development settings
+VERBOSE=true
+DRY_RUN=false
+
+# Logging configuration
+LOG_LEVEL=INFO
+LOG_FILE=logs/development.log
+```
+
+## Benefits
+
+- **Independent Development**: Submodules can be developed and tested in isolation
+- **Consistent Structure**: Standardized core functionality across all submodules
+- **Automated Testing**: Built-in test framework for quality assurance
+- **Easy Synchronization**: Simple process to update core modules
+- **Comprehensive Validation**: Automated checks for configuration and environment
+
+## Troubleshooting
+
+### Common Issues
+
+**Permission Denied**: Run `./dev-setup.sh` to fix file permissions
+
+**Module Not Found**: Ensure core modules are properly copied and executable
+
+**Test Failures**: Check test output for specific error messages
+
+**Configuration Errors**: Validate YAML syntax and required fields
+
+### Getting Help
+
+1. Check the test output for detailed error messages
+2. Review the logs in the `logs/` directory
+3. Ensure all dependencies are installed
+4. Verify file permissions are correct
