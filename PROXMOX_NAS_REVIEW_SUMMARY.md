@@ -122,9 +122,7 @@ cd vendor/proxmox-nas/ansible
 ./scripts/validate-framework.sh
 
 # Deploy complete NAS setup
-ansible-playbook site.yml \
-  --extra-vars "proxmox_api_password=your_password" \
-  --extra-vars "site_config_file=config/sites/your-site.yml"
+../../brewnix.sh deployment site proxmox-nas config/sites/your-site.yml
 ```
 
 ### 2. Enable Specific Services

@@ -73,8 +73,7 @@ USB Bootstrap           Single Playbook      Auto-Updates
 1. **Run Unified Deployment**
 
    ```bash
-   cd /opt/brewnix
-   ansible-playbook vendor/proxmox-nas/ansible/site.yml
+   ../../brewnix.sh deployment site proxmox-nas config/sites/nas-site.yml
    ```
 
 2. **Monitor Deployment**
